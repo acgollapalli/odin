@@ -7,6 +7,7 @@ foreign import pthread "system:System.framework"
 import "base:runtime"
 import "core:strings"
 import "core:c"
+import "core:sys/posix"
 
 Handle    :: distinct i32
 File_Time :: distinct u64
@@ -640,8 +641,10 @@ foreign libc {
 	@(link_name="bind")             _unix_bind          :: proc(socket: c.int, addr: rawptr, addr_len: socklen_t) -> c.int ---
 	@(link_name="setsockopt")       _unix_setsockopt    :: proc(socket: c.int, level: c.int, opt_name: c.int, opt_val: rawptr, opt_len: socklen_t) -> c.int ---
 	@(link_name="getsockopt")       _unix_getsockopt    :: proc(socket: c.int, level: c.int, opt_name: c.int, opt_val: rawptr, opt_len: ^socklen_t) -> c.int ---
+	@(link_name="recvmsg")          _unix_recvmsg       :: proc(socket: c.int, header: ^posix.msghdr, flags: c.int) -> c.ssize_t ---
 	@(link_name="recvfrom")         _unix_recvfrom      :: proc(socket: c.int, buffer: rawptr, buffer_len: c.size_t, flags: c.int, addr: rawptr, addr_len: ^socklen_t) -> c.ssize_t ---
 	@(link_name="recv")             _unix_recv          :: proc(socket: c.int, buffer: rawptr, buffer_len: c.size_t, flags: c.int) -> c.ssize_t ---
+	@(link_name="sendmsg")          _unix_sendmsg       :: proc(socket: c.int, header: ^posix.msghdr, flags: c.int) -> c.ssize_t ---
 	@(link_name="sendto")           _unix_sendto        :: proc(socket: c.int, buffer: rawptr, buffer_len: c.size_t, flags: c.int, addr: rawptr, addr_len: socklen_t) -> c.ssize_t ---
 	@(link_name="send")             _unix_send          :: proc(socket: c.int, buffer: rawptr, buffer_len: c.size_t, flags: c.int) -> c.ssize_t ---
 	@(link_name="shutdown")         _unix_shutdown      :: proc(socket: c.int, how: c.int) -> c.int ---
@@ -1262,6 +1265,14 @@ getsockopt :: proc(sd: Socket, level: int, optname: int, optval: rawptr, optlen:
 	return nil
 }
 
+recvmsg ::proc(sd: Socket, hdr: ^posix.msghdr, flags: int) -> (u32, Error) {
+	result := _unix_recvmsg(c.int(sd), hdr, c.int(flags))
+	if result < 0 {
+		return 0, get_last_error()
+	}
+	return u32(result), nil
+}
+
 recvfrom :: proc(sd: Socket, data: []byte, flags: int, addr: ^SOCKADDR, addr_size: ^socklen_t) -> (u32, Error) {
 	result := _unix_recvfrom(c.int(sd), raw_data(data), len(data), c.int(flags), addr, addr_size)
 	if result < 0 {
@@ -1272,6 +1283,14 @@ recvfrom :: proc(sd: Socket, data: []byte, flags: int, addr: ^SOCKADDR, addr_siz
 
 recv :: proc(sd: Socket, data: []byte, flags: int) -> (u32, Error) {
 	result := _unix_recv(c.int(sd), raw_data(data), len(data), c.int(flags))
+	if result < 0 {
+		return 0, get_last_error()
+	}
+	return u32(result), nil
+}
+
+sendmsg ::proc(sd: Socket, hdr: ^posix.msghdr, flags: int) -> (u32, Error) {
+	result := _unix_sendmsg(c.int(sd), hdr, c.int(flags))
 	if result < 0 {
 		return 0, get_last_error()
 	}
