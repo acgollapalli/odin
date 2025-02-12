@@ -4507,6 +4507,20 @@ in6_addr :: struct {
 }
 
 
+WSAMSG :: struct {
+	name: LPSOCKADDR,
+	namelen: INT,
+	lpBuffers: LPWSABUF,
+	dwBufferCount: DWORD,
+	Control: DWORD,
+	dwFlags: DWORD,
+}
+LPWSAMSG :: ^WSAMSG
+
+	
+	
+
+
 DNS_STATUS :: distinct DWORD // zero is success
 DNS_INFO_NO_RECORDS :: 9501
 DNS_QUERY_NO_RECURSION :: 0x00000004
@@ -4554,6 +4568,7 @@ SOCKADDR :: struct {
 	sa_family: ADDRESS_FAMILY,
 	sa_data:   [14]CHAR,
 }
+LPSOCKADDR :: ^SOCKADDR
 
 ENUMRESNAMEPROCW :: #type proc (hModule: HMODULE, lpType: LPCWSTR, lpName: LPWSTR, lParam: LONG_PTR)-> BOOL
 ENUMRESTYPEPROCW :: #type proc (hModule: HMODULE, lpType: LPCWSTR, lParam: LONG_PTR)-> BOOL

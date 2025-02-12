@@ -39,7 +39,10 @@ WSAEVENT :: HANDLE
 
 WSAID_ACCEPTEX             :: GUID{0xb5367df1, 0xcbac, 0x11cf, {0x95, 0xca, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92}}
 WSAID_GETACCEPTEXSOCKADDRS :: GUID{0xb5367df2, 0xcbac, 0x11cf, {0x95, 0xca, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92}}
-WSAID_CONNECTX             :: GUID{0x25a207b9, 0xddf3, 0x4660, {0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74, 0x06, 0x3e}}
+WSAID_CONNECTEX            :: GUID{0x25a207b9, 0xddf3, 0x4660, {0x8e, 0xe9, 0x76, 0xe5, 0x8c, 0x74, 0x06, 0x3e}}
+WSAID_WSARECVMSG           :: GUID{0xf689d7c8, 0x6f1f, 0x436b, {0x8a, 0x53, 0xe5, 0x4f, 0xe3, 0x51, 0xc3, 0x22}}
+WSAID_WSASENDMSG           :: GUID{0xa441e712, 0x754f, 0x43ca, {0x84, 0xa7, 0x0d, 0xee, 0x44, 0xcf, 0x60, 0x6d}}
+
 
 SIO_GET_EXTENSION_FUNCTION_POINTER :: IOC_INOUT | IOC_WS2 | 6
 
@@ -50,17 +53,7 @@ IOC_WS2   :: 0x08000000
 
 SO_UPDATE_ACCEPT_CONTEXT :: 28683
 
-LPFN_CONNECTEX :: #type proc "system" (
-	s:                SOCKET,
-	sockaddr:         ^SOCKADDR_STORAGE_LH,
-	namelen:          c_int,
-	lpSendBuffer:     PVOID,
-	dwSendDataLength: DWORD,
-	lpdwBytesSent:    LPDWORD,
-	lpOverlapped:     LPOVERLAPPED,
-) -> BOOL
-
-LPFN_ACCEPTEX :: #type proc "system" (
+AcceptEx :: #type proc "system" (
 	sListenSocket:         SOCKET,
 	sAcceptSocket:         SOCKET,
 	lpOutputBuffer:        PVOID,
@@ -70,10 +63,42 @@ LPFN_ACCEPTEX :: #type proc "system" (
 	lpdwBytesReceived:     LPDWORD,
 	lpOverlapped:          LPOVERLAPPED,
 ) -> BOOL
+LPFN_ACCEPTEX :: ^AcceptEx
+
+ConnectEx :: #type proc "system" (
+	s:                SOCKET,
+	sockaddr:         ^SOCKADDR_STORAGE_LH,
+	namelen:          c_int,
+	lpSendBuffer:     PVOID,
+	dwSendDataLength: DWORD,
+	lpdwBytesSent:    LPDWORD,
+	lpOverlapped:     LPOVERLAPPED,
+ ) -> BOOL
+LPFN_CONNECTEX :: ^ConnectEx
+
+WSARecvMsg :: #type proc "system" (
+	s:                      SOCKET,
+	lpMsg:                  LPWSAMSG,
+	lpdwNumberOfBytesRecvd: LPDWORD,
+	lpOverlapped:           LPWSAOVERLAPPED,
+	lpCompletionRoutine:    LPWSAOVERLAPPED_COMPLETION_ROUTINE,
+) -> INT
+LPFN_WSARECVMSG :: ^WSARecvMsg
+
+WSASendMsg :: #type proc "system" (
+	s:                   SOCKET,
+	lpMsg:               LPWSAMSG,
+	dwFlags:             DWORD,
+	lpNumberOfBytesSent: LPDWORD,
+	lpOverlapped:        LPWSAOVERLAPPED,
+	lpCompletionRoutine: LPWSAOVERLAPPED_COMPLETION_ROUTINE,
+) -> INT
+LPFN_WSASENDMSG :: ^WSASendMsg
+	
 
 /*
 Example Load:
-	load_accept_ex :: proc(listener: SOCKET, fn_acceptex: ^LPFN_ACCEPTEX) {
+	load_accept_ex :: proc(listener: SOCKET, fn_acceptex: LPFN_ACCEPTEX) {
 		bytes: u32
 		guid_accept_ex := WSAID_ACCEPTEX
 		rc := WSAIoctl(listener, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid_accept_ex, size_of(guid_accept_ex),
