@@ -140,6 +140,7 @@ struct AttributeContext {
 	bool    instrumentation_enter : 1;
 	bool    instrumentation_exit  : 1;
 	bool    rodata                : 1;
+	bool    ignore_duplicates     : 1;
 	u32 optimization_mode; // ProcedureOptimizationMode
 	i64 foreign_import_priority_index;
 	String extra_linker_flags;
@@ -461,6 +462,7 @@ struct CheckerInfo {
 	MPSCQueue<Entity *> required_global_variable_queue;
 	MPSCQueue<Entity *> required_foreign_imports_through_force_queue;
 	MPSCQueue<Entity *> foreign_imports_to_check_fullpaths;
+	MPSCQueue<Entity *> foreign_decls_to_check;
 
 	MPSCQueue<Ast *> intrinsics_entry_point_usage;
 
@@ -521,6 +523,7 @@ struct CheckerContext {
 	bool       in_enum_type;
 	bool       collect_delayed_decls;
 	bool       allow_polymorphic_types;
+	bool       disallow_polymorphic_return_types; // NOTE(zen3ger): no poly type decl in return types
 	bool       no_polymorphic_errors;
 	bool       hide_polymorphic_errors;
 	bool       in_polymorphic_specialization;

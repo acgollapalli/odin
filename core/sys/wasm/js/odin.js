@@ -110,7 +110,10 @@ class WasmMemoryInterface {
 	}
 
 	loadCstring(ptr) {
-		const start = this.loadPtr(ptr);
+		return this.loadCstringDirect(this.loadPtr(ptr));
+	}
+
+	loadCstringDirect(start) {
 		if (start == 0) {
 			return null;
 		}
@@ -1548,8 +1551,8 @@ function odinSetupDefaultImports(wasmMemoryInterface, consoleElement, memory) {
 
 					wmi.storeInt(off(W, W), e.key.length)
 					wmi.storeInt(off(W, W), e.code.length)
-					wmi.storeString(off(16, 1), e.key);
-					wmi.storeString(off(16, 1), e.code);
+					wmi.storeString(off(32, 1), e.key);
+					wmi.storeString(off(32, 1), e.code);
 				} else if (e.type === 'scroll') {
 					wmi.storeF64(off(8, 8), window.scrollX);
 					wmi.storeF64(off(8, 8), window.scrollY);

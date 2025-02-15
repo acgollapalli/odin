@@ -57,6 +57,10 @@
 #define LB_USE_NEW_PASS_SYSTEM 0
 #endif
 
+#if LLVM_VERSION_MAJOR >= 19
+#define LLVMDIBuilderInsertDeclareAtEnd(...) LLVMDIBuilderInsertDeclareRecordAtEnd(__VA_ARGS__)
+#endif
+
 gb_internal bool lb_use_new_pass_system(void) {
 	return LB_USE_NEW_PASS_SYSTEM;
 }
@@ -75,7 +79,6 @@ enum lbAddrKind {
 	lbAddr_Context,
 	lbAddr_SoaVariable,
 
-	lbAddr_RelativePointer,
 
 	lbAddr_Swizzle,
 	lbAddr_SwizzleLarge,
@@ -103,9 +106,6 @@ struct lbAddr {
 			lbValue index;
 			Ast *node;
 		} index_set;
-		struct {
-			bool deref;
-		} relative;
 		struct {
 			Type *type;
 			u8 count;      // 2, 3, or 4 components
@@ -141,6 +141,11 @@ struct lbPadType {
 	i64 padding;
 	i64 padding_align;
 	LLVMTypeRef type;
+};
+
+struct lbObjcRef {
+	Entity * entity;
+	lbAddr local_module_addr;
 };
 
 struct lbModule {
@@ -196,8 +201,8 @@ struct lbModule {
 	RecursiveMutex debug_values_mutex;
 	PtrMap<void *, LLVMMetadataRef> debug_values; 
 
-	StringMap<lbAddr> objc_classes;
-	StringMap<lbAddr> objc_selectors;
+	StringMap<lbObjcRef> objc_classes;
+	StringMap<lbObjcRef> objc_selectors;
 
 	PtrMap<Type *, lbAddr> map_cell_info_map; // address of runtime.Map_Info
 	PtrMap<Type *, lbAddr> map_info_map;      // address of runtime.Map_Cell_Info
@@ -359,6 +364,10 @@ struct lbProcedure {
 	bool             in_multi_assignment;
 	Array<LLVMValueRef> raw_input_parameters;
 
+	bool             uses_branch_location;
+	TokenPos         branch_location_pos;
+	TokenPos         curr_token_pos;
+
 	Array<lbVariadicReuseSlices> variadic_reuses;
 	lbAddr variadic_reuse_base_array_ptr;
 
@@ -444,7 +453,8 @@ gb_internal lbValue lb_emit_matrix_ev(lbProcedure *p, lbValue s, isize row, isiz
 
 gb_internal lbValue lb_emit_arith(lbProcedure *p, TokenKind op, lbValue lhs, lbValue rhs, Type *type);
 gb_internal lbValue lb_emit_byte_swap(lbProcedure *p, lbValue value, Type *end_type);
-gb_internal void lb_emit_defer_stmts(lbProcedure *p, lbDeferExitKind kind, lbBlock *block);
+gb_internal void lb_emit_defer_stmts(lbProcedure *p, lbDeferExitKind kind, lbBlock *block, TokenPos pos);
+gb_internal void lb_emit_defer_stmts(lbProcedure *p, lbDeferExitKind kind, lbBlock *block, Ast *node);
 gb_internal lbValue lb_emit_transmute(lbProcedure *p, lbValue value, Type *t);
 gb_internal lbValue lb_emit_comp(lbProcedure *p, TokenKind op_kind, lbValue left, lbValue right);
 gb_internal lbValue lb_emit_call(lbProcedure *p, lbValue value, Array<lbValue> const &args, ProcInlining inlining = ProcInlining_none);
@@ -742,3 +752,5 @@ gb_global char const *llvm_linkage_strings[] = {
 };
 
 #define ODIN_METADATA_IS_PACKED str_lit("odin-is-packed")
+#define ODIN_METADATA_MIN_ALIGN str_lit("odin-min-align")
+#define ODIN_METADATA_MAX_ALIGN str_lit("odin-max-align")

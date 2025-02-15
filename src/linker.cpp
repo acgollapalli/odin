@@ -167,8 +167,10 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 
 		if (is_windows) {
 			String section_name = str_lit("msvc-link");
-			if (build_context.use_lld) {
-				section_name = str_lit("lld-link");
+			switch (build_context.linker_choice) {
+			case Linker_Default:  break;
+			case Linker_lld:      section_name = str_lit("lld-link"); break;
+			case Linker_radlink:  section_name = str_lit("rad-link"); break;
 			}
 			timings_start_section(timings, section_name);
 
@@ -304,7 +306,48 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 			String windows_sdk_bin_path = path_to_string(heap_allocator(), build_context.build_paths[BuildPath_Win_SDK_Bin_Path]);
 			defer (gb_free(heap_allocator(), windows_sdk_bin_path.text));
 
-			if (!build_context.use_lld) { // msvc
+			switch (build_context.linker_choice) {
+			case Linker_lld:
+				result = system_exec_command_line_app("msvc-lld-link",
+					"\"%.*s\\bin\\lld-link\" %s -OUT:\"%.*s\" %s "
+					"/nologo /incremental:no /opt:ref /subsystem:%.*s "
+					"%.*s "
+					"%.*s "
+					"%s "
+					"",
+					LIT(build_context.ODIN_ROOT), object_files, LIT(output_filename),
+					link_settings,
+					LIT(build_context.ODIN_WINDOWS_SUBSYSTEM),
+					LIT(build_context.link_flags),
+					LIT(build_context.extra_linker_flags),
+					lib_str
+				);
+
+				if (result) {
+					return result;
+				}
+				break;
+			case Linker_radlink:
+				result = system_exec_command_line_app("msvc-rad-link",
+					"\"%.*s\\bin\\radlink\" %s -OUT:\"%.*s\" %s "
+					"/nologo /incremental:no /opt:ref /subsystem:%.*s "
+					"%.*s "
+					"%.*s "
+					"%s "
+					"",
+					LIT(build_context.ODIN_ROOT), object_files, LIT(output_filename),
+					link_settings,
+					LIT(build_context.ODIN_WINDOWS_SUBSYSTEM),
+					LIT(build_context.link_flags),
+					LIT(build_context.extra_linker_flags),
+					lib_str
+				);
+
+				if (result) {
+					return result;
+				}
+				break;
+			default: { // msvc
 				String res_path = quote_path(heap_allocator(), build_context.build_paths[BuildPath_RES]);
 				String rc_path  = quote_path(heap_allocator(), build_context.build_paths[BuildPath_RC]);
 				defer (gb_free(heap_allocator(), res_path.text));
@@ -365,25 +408,8 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 				if (result) {
 					return result;
 				}
-			} else { // lld
-				result = system_exec_command_line_app("msvc-lld-link",
-					"\"%.*s\\bin\\lld-link\" %s -OUT:\"%.*s\" %s "
-					"/nologo /incremental:no /opt:ref /subsystem:%.*s "
-					"%.*s "
-					"%.*s "
-					"%s "
-					"",
-					LIT(build_context.ODIN_ROOT), object_files, LIT(output_filename),
-					link_settings,
-					LIT(build_context.ODIN_WINDOWS_SUBSYSTEM),
-					LIT(build_context.link_flags),
-					LIT(build_context.extra_linker_flags),
-					lib_str
-				);
-
-				if (result) {
-					return result;
-				}
+				break;
+			}
 			}
 		} else {
 			timings_start_section(timings, str_lit("ld-link"));
@@ -423,6 +449,26 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 				if (extra_linker_flags.len != 0) {
 					lib_str = gb_string_append_fmt(lib_str, " %.*s", LIT(extra_linker_flags));
 				}
+
+				if (build_context.metrics.os == TargetOs_darwin) {
+					// Print frameworks first
+					for (String lib : e->LibraryName.paths) {
+						lib = string_trim_whitespace(lib);
+						if (lib.len == 0) {
+							continue;
+						}
+						if (string_ends_with(lib, str_lit(".framework"))) {
+							if (string_set_update(&min_libs_set, lib)) {
+								continue;
+							}
+
+							String lib_name = lib;
+							lib_name = remove_extension_from_path(lib_name);
+							lib_str = gb_string_append_fmt(lib_str, " -framework %.*s ", LIT(lib_name));
+						}
+					}
+				}
+
 				for (String lib : e->LibraryName.paths) {
 					lib = string_trim_whitespace(lib);
 					if (lib.len == 0) {
@@ -510,7 +556,18 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 						}
 						array_add(&gen->output_object_paths, obj_file);
 					} else {
-						if (string_set_update(&min_libs_set, lib) && build_context.min_link_libs) {
+						bool short_circuit = false;
+						if (string_ends_with(lib, str_lit(".framework"))) {
+							short_circuit = true;
+						} else if (string_ends_with(lib, str_lit(".dylib"))) {
+							short_circuit = true;
+						} else if (string_ends_with(lib, str_lit(".so"))) {
+							short_circuit = true;
+						} else if (e->LibraryName.ignore_duplicates) {
+							short_circuit = true;
+						}
+
+						if (string_set_update(&min_libs_set, lib) && (build_context.min_link_libs || short_circuit)) {
 							continue;
 						}
 
@@ -605,9 +662,18 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 					link_settings = gb_string_appendc(link_settings, "-Wl,-fini,'_odin_exit_point' ");
 				}
 
-			} else if (build_context.metrics.os != TargetOs_openbsd && build_context.metrics.os != TargetOs_haiku && build_context.metrics.arch != TargetArch_riscv64) {
-				// OpenBSD and Haiku default to PIE executable. do not pass -no-pie for it.
-				link_settings = gb_string_appendc(link_settings, "-no-pie ");
+			}
+
+			if (build_context.build_mode == BuildMode_Executable && build_context.reloc_mode == RelocMode_PIC) {
+				// Do not disable PIE, let the linker choose. (most likely you want it enabled)
+			} else if (build_context.build_mode != BuildMode_DynamicLibrary) {
+				if (build_context.metrics.os != TargetOs_openbsd
+					&& build_context.metrics.os != TargetOs_haiku
+					&& build_context.metrics.arch != TargetArch_riscv64
+				) {
+					// OpenBSD and Haiku default to PIE executable. do not pass -no-pie for it.
+					link_settings = gb_string_appendc(link_settings, "-no-pie ");
+				}
 			}
 
 			gbString platform_lib_str = gb_string_make(heap_allocator(), "");
@@ -670,7 +736,7 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 			link_command_line = gb_string_append_fmt(link_command_line, " %.*s ", LIT(build_context.extra_linker_flags));
 			link_command_line = gb_string_append_fmt(link_command_line, " %s ", link_settings);
 
-			if (build_context.use_lld) {
+			if (build_context.linker_choice == Linker_lld) {
 				link_command_line = gb_string_append_fmt(link_command_line, " -fuse-ld=lld");
 				result = system_exec_command_line_app("lld-link", link_command_line);
 			} else {

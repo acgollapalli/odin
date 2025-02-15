@@ -124,8 +124,16 @@ gb_internal void lb_mem_zero_ptr(lbProcedure *p, LLVMValueRef ptr, Type *type, u
 	switch (kind) {
 	case LLVMStructTypeKind:
 	case LLVMArrayTypeKind:
-		// NOTE(bill): Enforce zeroing through memset to make sure padding is zeroed too
-		lb_mem_zero_ptr_internal(p, ptr, lb_const_int(p->module, t_int, sz).value, alignment, false);
+		if (is_type_tuple(type)) {
+			// NOTE(bill): even though this should be safe, to keep ASAN happy, do not zero the implicit padding at the end
+			GB_ASSERT(type->kind == Type_Tuple);
+			i64 n = type->Tuple.variables.count-1;
+			i64 end_offset = type->Tuple.offsets[n] + type_size_of(type->Tuple.variables[n]->type);
+			lb_mem_zero_ptr_internal(p, ptr, lb_const_int(p->module, t_int, end_offset).value, alignment, false);
+		} else {
+			// NOTE(bill): Enforce zeroing through memset to make sure padding is zeroed too
+			lb_mem_zero_ptr_internal(p, ptr, lb_const_int(p->module, t_int, sz).value, alignment, false);
+		}
 		break;
 	default:
 		LLVMBuildStore(p->builder, LLVMConstNull(lb_type(p->module, type)), ptr);
@@ -468,8 +476,8 @@ gb_internal lbValue lb_emit_or_else(lbProcedure *p, Ast *arg, Ast *else_expr, Ty
 	}
 }
 
-gb_internal void lb_build_return_stmt(lbProcedure *p, Slice<Ast *> const &return_results);
-gb_internal void lb_build_return_stmt_internal(lbProcedure *p, lbValue res);
+gb_internal void lb_build_return_stmt(lbProcedure *p, Slice<Ast *> const &return_results, TokenPos pos);
+gb_internal void lb_build_return_stmt_internal(lbProcedure *p, lbValue res, TokenPos pos);
 
 gb_internal lbValue lb_emit_or_return(lbProcedure *p, Ast *arg, TypeAndValue const &tv) {
 	lbValue lhs = {};
@@ -498,10 +506,10 @@ gb_internal lbValue lb_emit_or_return(lbProcedure *p, Ast *arg, TypeAndValue con
 			lbValue found = map_must_get(&p->module->values, end_entity);
 			lb_emit_store(p, found, rhs);
 
-			lb_build_return_stmt(p, {});
+			lb_build_return_stmt(p, {}, ast_token(arg).pos);
 		} else {
 			GB_ASSERT(tuple->variables.count == 1);
-			lb_build_return_stmt_internal(p, rhs);
+			lb_build_return_stmt_internal(p, rhs, ast_token(arg).pos);
 		}
 	}
 	lb_start_block(p, continue_block);
@@ -763,9 +771,7 @@ gb_internal lbValue lb_emit_union_cast(lbProcedure *p, lbValue value, Type *type
 			auto args = array_make<lbValue>(permanent_allocator(), arg_count);
 			args[0] = ok;
 
-			args[1] = lb_const_string(m, get_file_path_string(pos.file_id));
-			args[2] = lb_const_int(m, t_i32, pos.line);
-			args[3] = lb_const_int(m, t_i32, pos.column);
+			lb_set_file_line_col(p, array_slice(args, 1, args.count), pos);
 
 			if (!build_context.no_rtti) {
 				args[4] = lb_typeid(m, src_type);
@@ -839,9 +845,7 @@ gb_internal lbAddr lb_emit_any_cast_addr(lbProcedure *p, lbValue value, Type *ty
 			auto args = array_make<lbValue>(permanent_allocator(), arg_count);
 			args[0] = ok;
 
-			args[1] = lb_const_string(m, get_file_path_string(pos.file_id));
-			args[2] = lb_const_int(m, t_i32, pos.line);
-			args[3] = lb_const_int(m, t_i32, pos.column);
+			lb_set_file_line_col(p, array_slice(args, 1, args.count), pos);
 
 			if (!build_context.no_rtti) {
 				args[4] = any_typeid;
@@ -1123,10 +1127,6 @@ gb_internal lbValue lb_emit_struct_ep(lbProcedure *p, lbValue s, i32 index) {
 	Type *t = base_type(type_deref(s.type));
 	Type *result_type = nullptr;
 
-	if (is_type_relative_pointer(t)) {
-		s = lb_addr_get_ptr(p, lb_addr(s));
-	}
-
 	if (is_type_struct(t)) {
 		result_type = get_struct_field_type(t, index);
 	} else if (is_type_union(t)) {
@@ -1196,9 +1196,22 @@ gb_internal lbValue lb_emit_struct_ep(lbProcedure *p, lbValue s, i32 index) {
 	lbValue gep = lb_emit_struct_ep_internal(p, s, index, result_type);
 
 	Type *bt = base_type(t);
-	if (bt->kind == Type_Struct && bt->Struct.is_packed) {
-		lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED, 1);
-		GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED) == 1);
+	if (bt->kind == Type_Struct) {
+		if (bt->Struct.is_packed) {
+			lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED, 1);
+			GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_IS_PACKED) == 1);
+		}
+		u64 align_max = bt->Struct.custom_max_field_align;
+		u64 align_min = bt->Struct.custom_min_field_align;
+		GB_ASSERT(align_min == 0 || align_max == 0 || align_min <= align_max);
+		if (align_max) {
+			lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MAX_ALIGN, align_max);
+			GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MAX_ALIGN) == align_max);
+		}
+		if (align_min) {
+			lb_set_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MIN_ALIGN, align_min);
+			GB_ASSERT(lb_get_metadata_custom_u64(p->module, gep.value, ODIN_METADATA_MIN_ALIGN) == align_min);
+		}
 	}
 
 	return gep;
@@ -1431,8 +1444,6 @@ gb_internal lbValue lb_emit_deep_field_gep(lbProcedure *p, lbValue e, Selection 
 		} else if (type->kind == Type_Array) {
 			e = lb_emit_array_epi(p, e, index);
 		} else if (type->kind == Type_Map) {
-			e = lb_emit_struct_ep(p, e, index);
-		} else if (type->kind == Type_RelativePointer) {
 			e = lb_emit_struct_ep(p, e, index);
 		} else {
 			GB_PANIC("un-gep-able type %s", type_to_string(type));
@@ -2078,23 +2089,34 @@ gb_internal void lb_set_wasm_export_attributes(LLVMValueRef value, String export
 
 
 gb_internal lbAddr lb_handle_objc_find_or_register_selector(lbProcedure *p, String const &name) {
-	lbAddr *found = string_map_get(&p->module->objc_selectors, name);
+	lbObjcRef *found = string_map_get(&p->module->objc_selectors, name);
 	if (found) {
-		return *found;
-	} else {
-		lbModule *default_module = &p->module->gen->default_module;
-		Entity *e = nullptr;
-		lbAddr default_addr = lb_add_global_generated(default_module, t_objc_SEL, {}, &e);
-
-		lbValue ptr = lb_find_value_from_entity(p->module, e);
-		lbAddr local_addr = lb_addr(ptr);
-
-		string_map_set(&default_module->objc_selectors, name, default_addr);
-		if (default_module != p->module) {
-			string_map_set(&p->module->objc_selectors, name, local_addr);
-		}
-		return local_addr;
+		return found->local_module_addr;
 	}
+
+	lbModule *default_module = &p->module->gen->default_module;
+	Entity *entity = {};
+
+	if (default_module != p->module) {
+		found = string_map_get(&default_module->objc_selectors, name);
+		if (found) {
+			entity = found->entity;
+		}
+	}
+
+	if (!entity) {
+		lbAddr default_addr = lb_add_global_generated(default_module, t_objc_SEL, {}, &entity);
+		string_map_set(&default_module->objc_selectors, name, lbObjcRef{entity, default_addr});
+	}
+
+	lbValue ptr = lb_find_value_from_entity(p->module, entity);
+	lbAddr local_addr = lb_addr(ptr);
+
+	if (default_module != p->module) {
+		string_map_set(&p->module->objc_selectors, name, lbObjcRef{entity, local_addr});
+	}
+
+	return local_addr;
 }
 
 gb_internal lbValue lb_handle_objc_find_selector(lbProcedure *p, Ast *expr) {
@@ -2124,23 +2146,34 @@ gb_internal lbValue lb_handle_objc_register_selector(lbProcedure *p, Ast *expr) 
 }
 
 gb_internal lbAddr lb_handle_objc_find_or_register_class(lbProcedure *p, String const &name) {
-	lbAddr *found = string_map_get(&p->module->objc_classes, name);
+	lbObjcRef *found = string_map_get(&p->module->objc_classes, name);
 	if (found) {
-		return *found;
-	} else {
-		lbModule *default_module = &p->module->gen->default_module;
-		Entity *e = nullptr;
-		lbAddr default_addr = lb_add_global_generated(default_module, t_objc_SEL, {}, &e);
-
-		lbValue ptr = lb_find_value_from_entity(p->module, e);
-		lbAddr local_addr = lb_addr(ptr);
-
-		string_map_set(&default_module->objc_classes, name, default_addr);
-		if (default_module != p->module) {
-			string_map_set(&p->module->objc_classes, name, local_addr);
-		}
-		return local_addr;
+		return found->local_module_addr;
 	}
+
+	lbModule *default_module = &p->module->gen->default_module;
+	Entity *entity = {};
+
+	if (default_module != p->module) {
+		found = string_map_get(&default_module->objc_classes, name);
+		if (found) {
+			entity = found->entity;
+		}
+	}
+
+	if (!entity) {
+		lbAddr default_addr = lb_add_global_generated(default_module, t_objc_Class, {}, &entity);
+		string_map_set(&default_module->objc_classes, name, lbObjcRef{entity, default_addr});
+	}
+
+	lbValue ptr = lb_find_value_from_entity(p->module, entity);
+	lbAddr local_addr = lb_addr(ptr);
+
+	if (default_module != p->module) {
+		string_map_set(&p->module->objc_classes, name, lbObjcRef{entity, local_addr});
+	}
+
+	return local_addr;
 }
 
 gb_internal lbValue lb_handle_objc_find_class(lbProcedure *p, Ast *expr) {
@@ -2181,23 +2214,7 @@ gb_internal lbValue lb_handle_objc_id(lbProcedure *p, Ast *expr) {
 		GB_ASSERT(e->kind == Entity_TypeName);
 		String name = e->TypeName.objc_class_name;
 
-		lbAddr *found = string_map_get(&p->module->objc_classes, name);
-		if (found) {
-			return lb_addr_load(p, *found);
-		} else {
-			lbModule *default_module = &p->module->gen->default_module;
-			Entity *e = nullptr;
-			lbAddr default_addr = lb_add_global_generated(default_module, t_objc_Class, {}, &e);
-
-			lbValue ptr = lb_find_value_from_entity(p->module, e);
-			lbAddr local_addr = lb_addr(ptr);
-
-			string_map_set(&default_module->objc_classes, name, default_addr);
-			if (default_module != p->module) {
-				string_map_set(&p->module->objc_classes, name, local_addr);
-			}
-			return lb_addr_load(p, local_addr);
-		}
+		return lb_addr_load(p, lb_handle_objc_find_or_register_class(p, name));
 	}
 
 	return lb_build_expr(p, expr);

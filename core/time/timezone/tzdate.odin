@@ -93,6 +93,8 @@ trans_date_to_seconds :: proc(year: i64, td: datetime.TZ_Transition_Date) -> (se
 
 	switch td.type {
 	case .Month_Week_Day:
+		if td.month < 1 { return }
+
 		t += month_to_seconds(int(td.month) - 1, is_leap)
 
 		weekday := ((t + (4 * DAY_SEC)) %% (7 * DAY_SEC)) / DAY_SEC
@@ -166,7 +168,7 @@ process_rrule :: proc(rrule: datetime.TZ_RRule, tm: time.Time) -> (out: datetime
 		},
 	}
 	record_sort_proc :: proc(i, j: datetime.TZ_Record) -> bool {
-		return i.time > j.time
+		return i.time < j.time
 	}
 	slice.sort_by(records, record_sort_proc)
 
@@ -177,7 +179,7 @@ process_rrule :: proc(rrule: datetime.TZ_RRule, tm: time.Time) -> (out: datetime
 		}
 	}
 
-	return records[len(records)-1], true
+	return records[0], true
 }
 
 datetime_to_utc :: proc(dt: datetime.DateTime) -> (out: datetime.DateTime, success: bool) #optional_ok {
